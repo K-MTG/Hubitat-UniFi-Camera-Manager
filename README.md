@@ -27,10 +27,6 @@ Turning the switch **off** restores normal operation:
 - Clears the privacy mask
 - Restores speaker volume (default `100`)
 
-Unlike the [hubitat-august-ble](https://github.com/K-MTG/Hubitat-August-BLE) project, this is not a
-parent/child setup — each camera gets its own independent device instance, since there's no bridge/discovery
-service in the middle.
-
 ---
 
 ## What you get
@@ -45,11 +41,11 @@ service in the middle.
 
 ### Limitations / Notes
 
-- This talks to the **camera itself**, not the UniFi Protect controller/NVR. It uses the same local API as
-  [`unifi-camera-rebooter`](https://github.com/K-MTG/unifi-camera-rebooter)'s `client/camera.py`.
-- The camera's audio volume field is actually **0-100** (integer). The reference Python client's
-  `set_volume()` documents/validates a `0.0-1.0` range, which is incorrect — this driver sends the raw
-  0-100 value directly and ignores that convention.
+- The camera's audio volume field is **0-100** (integer), not 0.0-1.0.
+- **Never set volume to `0`.** On at least some camera models, `{"av":{"audio":{"volume":0}}}` doesn't just
+  turn the gain down — it hard-disables the camera's audio, in a way that persists and is not reversible via
+  the same API call (you have to go fix it manually in the Protect app). The driver's volume preferences are
+  bounded to `1-100` for this reason; the lowest safe "near-mute" value is `1`.
 - The camera uses a self-signed certificate; the driver ignores SSL validation errors (`ignoreSSLIssues`)
   when talking to it. This is only safe because the connection stays on your LAN.
 - This is LAN-local. Do not expose the camera's HTTPS port to the public internet.
@@ -73,8 +69,7 @@ service in the middle.
 
 ### Credentials
 - The camera's **local management username and password** (this is the local device credential set on the
-  camera itself — typically `ubnt` plus a device-local password, the same credential
-  `unifi-camera-rebooter` uses — not your Ubiquiti cloud/SSO account).
+  camera itself — typically `ubnt` plus a device-local password — not your Ubiquiti cloud/SSO account).
   - If you don't already have this, it's usually set/reset via the UniFi Protect app's camera device
     settings, or during camera adoption.
 
@@ -107,8 +102,9 @@ service in the middle.
 5. Open the new device and fill in **Preferences**:
    - **Camera IP Address** — the camera's static IP / DHCP reservation
    - **Camera Username** / **Camera Password** — the camera's local management credentials
-   - **Privacy Mode Volume** — volume (0-100) to use while privacy mode is on (default `1`)
-   - **Restored Volume** — volume (0-100) to restore to when privacy mode is off (default `100`)
+   - **Privacy Mode Volume** — volume (1-100, never `0` — see Limitations) to use while privacy mode is on
+     (default `1`)
+   - **Restored Volume** — volume (1-100) to restore to when privacy mode is off (default `100`)
 6. Click **Save Preferences**
 7. Click **testConnection** and check the **commStatus** attribute / **Logs** to confirm the credentials work
 8. Repeat steps 4-7 for each additional camera — one device per camera
@@ -126,11 +122,3 @@ to toggle privacy mode.
   - `off()` → single PUT that clears the privacy mask and sets volume to **Restored Volume**
 - `testConnection` command re-authenticates and reports via the `commStatus` attribute (`online`/`offline`)
 - Logs in fresh before every command (not cached in device state); retries once with a new session on a 401
-
----
-
-## Credits & References
-
-This project's camera API usage (login, privacy mask, volume endpoints) mirrors
-[`unifi-camera-rebooter`](https://github.com/K-MTG/unifi-camera-rebooter)'s `client/camera.py`, which
-documents the camera's local `/api/1.1/*` endpoints.

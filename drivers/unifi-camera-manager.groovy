@@ -2,7 +2,7 @@
  * UniFi Camera Manager
  *
  * Filename: unifi-camera-manager.groovy
- * Version:  0.3.0
+ * Version:  0.4.0
  *
  * Description:
  * - Represents a single UniFi Protect camera (talks directly to the
@@ -14,11 +14,12 @@
  *   session cookie is NOT cached in device state (see Notes)
  *
  * Notes:
- * - The camera's audio volume field is 0-100 (integer), not 0.0-1.0. This
- *   driver sends the raw 0-100 value; it does not follow the 0.0-1.0
- *   convention originally (and incorrectly) documented by this project's
- *   reference Python client (unifi-camera-rebooter/client/camera.py) -
- *   confirmed by testing against a real camera.
+ * - The camera's audio volume field is 0-100 (integer), not 0.0-1.0.
+ * - NEVER send volume 0. On at least some camera models,
+ *   {"av":{"audio":{"volume":0}}} hard-disables the camera's audio in a way
+ *   that persists and is not reversible via the API - it has to be fixed
+ *   manually in the Protect app. Volume preferences are therefore bounded
+ *   to 1-100, with a runtime clamp as a second line of defense.
  * - Mask + volume are set via a single combined PUT to /api/1.1/settings,
  *   since that endpoint applies partial patches (confirmed live: setting
  *   just isp.masks or av.audio.volume leaves the other untouched).
@@ -29,6 +30,10 @@
  *   would leave a working bearer credential sitting around in the clear.
  *   Commands here are infrequent user-triggered toggles, so the cost of a
  *   fresh login per command is negligible.
+ *
+ * Changes (0.4.0):
+ * - Bound volume preferences to 1-100 and add a runtime clamp; volume 0 can
+ *   permanently disable the camera's audio
  *
  * Changes (0.3.0):
  * - Stop caching the session cookie in device state; log in fresh per command
@@ -59,8 +64,8 @@ metadata {
         input name: "cameraIp", type: "string", title: "Camera IP Address", required: true
         input name: "cameraUsername", type: "string", title: "Camera Username", required: true
         input name: "cameraPassword", type: "password", title: "Camera Password", required: true
-        input name: "privacyVolume", type: "number", title: "Privacy Mode Volume (0-100)", range: "0..100", defaultValue: 1, required: true
-        input name: "normalVolume", type: "number", title: "Restored Volume (0-100)", range: "0..100", defaultValue: 100, required: true
+        input name: "privacyVolume", type: "number", title: "Privacy Mode Volume (1-100, never 0)", range: "1..100", defaultValue: 1, required: true
+        input name: "normalVolume", type: "number", title: "Restored Volume (1-100)", range: "1..100", defaultValue: 100, required: true
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false
     }
 }
@@ -92,7 +97,7 @@ private void logsOff() {
 def on() {
     logInfo "Enabling privacy mode"
 
-    Integer vol = (privacyVolume ?: 1) as Integer
+    Integer vol = safeVolume(privacyVolume, 1)
     if (applyPrivacyState(true, vol)) {
         sendEvent(name: "switch", value: "on")
         logInfo "Privacy mode enabled (mask on, volume ${vol})"
@@ -104,13 +109,28 @@ def on() {
 def off() {
     logInfo "Restoring normal camera operation"
 
-    Integer vol = (normalVolume ?: 100) as Integer
+    Integer vol = safeVolume(normalVolume, 100)
     if (applyPrivacyState(false, vol)) {
         sendEvent(name: "switch", value: "off")
         logInfo "Privacy mode disabled (mask cleared, volume ${vol})"
     } else {
         logWarn "Privacy mode disable failed; leaving switch state unchanged"
     }
+}
+
+/**
+ * Clamps to 1-100. Volume 0 is refused even if a preference somehow ends
+ * up unset/out-of-range - see file header Notes on why 0 is dangerous.
+ */
+private Integer safeVolume(rawValue, Integer fallback) {
+    Integer vol = (rawValue ?: fallback) as Integer
+    if (vol < 1) {
+        logWarn "Refusing volume ${vol} (0 can permanently disable camera audio); using 1 instead"
+        vol = 1
+    } else if (vol > 100) {
+        vol = 100
+    }
+    return vol
 }
 
 /* ================= Diagnostics ================= */

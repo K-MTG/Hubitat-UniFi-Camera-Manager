@@ -11,3 +11,4 @@
 
 # Local scratch/test files
 *.local.groovy
+secrets.local.txt
