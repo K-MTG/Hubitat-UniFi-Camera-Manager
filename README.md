@@ -1,8 +1,8 @@
 # Hubitat UniFi Camera Manager
 
-A Hubitat driver that exposes a UniFi Protect camera (e.g. G4 Doorbell) as an on/off **Switch** device for
-quick "privacy mode" control — no Protect controller, cloud, or bridge service required. The driver talks
-directly to the camera's local HTTPS API.
+A Hubitat driver that exposes a UniFi Protect camera (e.g. G4 Doorbell) as an on/off **Switch** device —
+switch on for normal, active/recording operation; switch off for privacy mode — no Protect controller,
+cloud, or bridge service required. The driver talks directly to the camera's local HTTPS API.
 
 ```text
 ┌─────────────────────────┐
@@ -19,13 +19,15 @@ directly to the camera's local HTTPS API.
 └───────────────────────────┘
 ```
 
-Turning the switch **on** enables privacy mode:
-- Applies a full-frame privacy mask (blacks out the video feed)
-- Lowers speaker volume to a near-mute level (default `1`)
-
-Turning the switch **off** restores normal operation:
+Turning the switch **on** activates normal operation:
 - Clears the privacy mask
+- Turns the status LED on
 - Restores speaker volume (default `100`)
+
+Turning the switch **off** enables privacy mode:
+- Applies a full-frame privacy mask (blacks out the video feed)
+- Turns the status LED off
+- Lowers speaker volume to a near-mute level (default `1`)
 
 ---
 
@@ -33,10 +35,11 @@ Turning the switch **off** restores normal operation:
 
 ### Features
 
-- ✅ One-click privacy mode (mask + mute) from Hubitat, Dashboards, or Rule Machine, via a single API call
+- ✅ One-click privacy mode (mask + status LED + mute) from Hubitat, Dashboards, or Rule Machine, via a
+  single API call
 - ✅ Cookie-based session auth against the camera's local API; logs in fresh per command rather than caching
   a session token in device state (see Security Notes)
-- ✅ Configurable privacy/restore volume levels
+- ✅ Configurable active/privacy volume levels
 - ✅ `testConnection` command + `commStatus` attribute for verifying credentials without touching the mask
 
 ### Limitations / Notes
@@ -46,6 +49,10 @@ Turning the switch **off** restores normal operation:
   turn the gain down — it hard-disables the camera's audio, in a way that persists and is not reversible via
   the same API call (you have to go fix it manually in the Protect app). The driver's volume preferences are
   bounded to `1-100` for this reason; the lowest safe "near-mute" value is `1`.
+- The status LED is controlled via `{"soundled":{"ledFaceEnabled":0|1}}`, confirmed against real hardware.
+  This is an undocumented field on the camera's own local API (older than, and separate from, Ubiquiti's
+  official Protect controller API), so there's no public reference for it. A similarly-named
+  `soundled.userLedOnNoff` field exists but did **not** control the visible LED in testing.
 - The camera uses a self-signed certificate; the driver ignores SSL validation errors (`ignoreSSLIssues`)
   when talking to it. This is only safe because the connection stays on your LAN.
 - This is LAN-local. Do not expose the camera's HTTPS port to the public internet.
@@ -102,15 +109,15 @@ Turning the switch **off** restores normal operation:
 5. Open the new device and fill in **Preferences**:
    - **Camera IP Address** — the camera's static IP / DHCP reservation
    - **Camera Username** / **Camera Password** — the camera's local management credentials
-   - **Privacy Mode Volume** — volume (1-100, never `0` — see Limitations) to use while privacy mode is on
-     (default `1`)
-   - **Restored Volume** — volume (1-100) to restore to when privacy mode is off (default `100`)
+   - **Active Volume, switch on** — volume (1-100) to use during normal operation (default `100`)
+   - **Privacy Mode Volume, switch off** — volume (1-100, never `0` — see Limitations) to use while privacy
+     mode is on (default `1`)
 6. Click **Save Preferences**
 7. Click **testConnection** and check the **commStatus** attribute / **Logs** to confirm the credentials work
 8. Repeat steps 4-7 for each additional camera — one device per camera
 
 Once configured, use the device's **on**/**off** commands (or add it to a Dashboard tile / Rule Machine rule)
-to toggle privacy mode.
+to toggle between normal operation (on) and privacy mode (off).
 
 ---
 
@@ -118,7 +125,9 @@ to toggle privacy mode.
 
 ### Driver: "UniFi Camera Manager"
 - Implements Hubitat's `Switch` capability:
-  - `on()` → single PUT that sets a full-frame privacy mask and sets volume to **Privacy Mode Volume**
-  - `off()` → single PUT that clears the privacy mask and sets volume to **Restored Volume**
+  - `on()` → single PUT that clears the privacy mask, turns the status LED on, and sets volume to
+    **Active Volume**
+  - `off()` → single PUT that sets a full-frame privacy mask, turns the status LED off, and sets volume to
+    **Privacy Mode Volume**
 - `testConnection` command re-authenticates and reports via the `commStatus` attribute (`online`/`offline`)
 - Logs in fresh before every command (not cached in device state); retries once with a new session on a 401

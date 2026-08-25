@@ -2,14 +2,14 @@
  * UniFi Camera Manager
  *
  * Filename: unifi-camera-manager.groovy
- * Version:  0.4.0
+ * Version:  0.5.0
  *
  * Description:
  * - Represents a single UniFi Protect camera (talks directly to the
  *   camera's local HTTPS API, e.g. G4 Doorbell, not the Protect controller)
- * - Exposes a Switch: on() enables "privacy mode", off() restores normal operation
- *     - on()  -> full-frame privacy mask + volume lowered to privacyVolume, single PUT
- *     - off() -> privacy mask cleared + volume restored to normalVolume, single PUT
+ * - Exposes a Switch: on() = camera active/recording, off() = privacy mode
+ *     - on()  -> mask cleared, status LED on,  volume restored to normalVolume,  single PUT
+ *     - off() -> full-frame mask, status LED off, volume lowered to privacyVolume, single PUT
  * - Cookie-based session auth (POST /api/1.1/login) for every command; the
  *   session cookie is NOT cached in device state (see Notes)
  *
@@ -20,9 +20,16 @@
  *   that persists and is not reversible via the API - it has to be fixed
  *   manually in the Protect app. Volume preferences are therefore bounded
  *   to 1-100, with a runtime clamp as a second line of defense.
- * - Mask + volume are set via a single combined PUT to /api/1.1/settings,
- *   since that endpoint applies partial patches (confirmed live: setting
- *   just isp.masks or av.audio.volume leaves the other untouched).
+ * - The status LED field is {"soundled":{"ledFaceEnabled":0|1}}, confirmed
+ *   against a real camera. This is an undocumented field on the camera's
+ *   own local API (distinct from, and older than, Ubiquiti's official
+ *   Protect controller API) - there's no public documentation for it.
+ *   A same-named `soundled.userLedOnNoff` field exists but does NOT
+ *   control the visible LED on the tested hardware; don't use it.
+ * - Mask + volume + LED are set via a single combined PUT to
+ *   /api/1.1/settings, since that endpoint applies partial patches
+ *   (confirmed live: setting only some of isp/av/soundled leaves the
+ *   rest untouched).
  * - The session cookie is deliberately re-obtained on every command rather
  *   than cached in `state`: Hubitat's device state is persisted and shown
  *   in plaintext in the UI's "State Variables" section (unlike the masked
@@ -30,6 +37,12 @@
  *   would leave a working bearer credential sitting around in the clear.
  *   Commands here are infrequent user-triggered toggles, so the cost of a
  *   fresh login per command is negligible.
+ *
+ * Changes (0.5.0):
+ * - Flip switch semantics: on() is now camera active/recording (normal),
+ *   off() is now privacy mode - matches how an on/off camera switch reads
+ * - Add status LED control (soundled.ledFaceEnabled), tied to the same
+ *   on()/off() toggle and folded into the same single PUT
  *
  * Changes (0.4.0):
  * - Bound volume preferences to 1-100 and add a runtime clamp; volume 0 can
@@ -64,8 +77,8 @@ metadata {
         input name: "cameraIp", type: "string", title: "Camera IP Address", required: true
         input name: "cameraUsername", type: "string", title: "Camera Username", required: true
         input name: "cameraPassword", type: "password", title: "Camera Password", required: true
-        input name: "privacyVolume", type: "number", title: "Privacy Mode Volume (1-100, never 0)", range: "1..100", defaultValue: 1, required: true
-        input name: "normalVolume", type: "number", title: "Restored Volume (1-100)", range: "1..100", defaultValue: 100, required: true
+        input name: "privacyVolume", type: "number", title: "Privacy Mode Volume, switch off (1-100, never 0)", range: "1..100", defaultValue: 1, required: true
+        input name: "normalVolume", type: "number", title: "Active Volume, switch on (1-100)", range: "1..100", defaultValue: 100, required: true
         input name: "debugLogging", type: "bool", title: "Enable debug logging", defaultValue: false
     }
 }
@@ -74,7 +87,7 @@ metadata {
 
 def installed() {
     logInfo "Installed"
-    sendEvent(name: "switch", value: "off")
+    sendEvent(name: "switch", value: "on")
     sendEvent(name: "commStatus", value: "unknown")
 }
 
@@ -95,26 +108,26 @@ private void logsOff() {
 /* ================= Capability: Switch ================= */
 
 def on() {
-    logInfo "Enabling privacy mode"
+    logInfo "Activating camera (normal operation)"
 
-    Integer vol = safeVolume(privacyVolume, 1)
-    if (applyPrivacyState(true, vol)) {
+    Integer vol = safeVolume(normalVolume, 100)
+    if (applyCameraState(true, vol)) {
         sendEvent(name: "switch", value: "on")
-        logInfo "Privacy mode enabled (mask on, volume ${vol})"
+        logInfo "Camera active (mask cleared, LED on, volume ${vol})"
     } else {
-        logWarn "Privacy mode enable failed; leaving switch state unchanged"
+        logWarn "Camera activate failed; leaving switch state unchanged"
     }
 }
 
 def off() {
-    logInfo "Restoring normal camera operation"
+    logInfo "Enabling privacy mode"
 
-    Integer vol = safeVolume(normalVolume, 100)
-    if (applyPrivacyState(false, vol)) {
+    Integer vol = safeVolume(privacyVolume, 1)
+    if (applyCameraState(false, vol)) {
         sendEvent(name: "switch", value: "off")
-        logInfo "Privacy mode disabled (mask cleared, volume ${vol})"
+        logInfo "Privacy mode enabled (mask on, LED off, volume ${vol})"
     } else {
-        logWarn "Privacy mode disable failed; leaving switch state unchanged"
+        logWarn "Privacy mode enable failed; leaving switch state unchanged"
     }
 }
 
@@ -150,24 +163,28 @@ def testConnection() {
 /* ================= Camera API ================= */
 
 /**
- * Sets the privacy mask and volume in a single PUT, since
+ * Sets mask, volume, and status LED in a single PUT, since
  * /api/1.1/settings applies partial patches (confirmed against a real
- * camera - unrelated isp/av fields are left untouched).
+ * camera - unrelated isp/av/soundled fields are left untouched).
+ *
+ * @param active true = normal operation (mask cleared, LED on)
+ *               false = privacy mode (full-frame mask, LED off)
  */
-private boolean applyPrivacyState(boolean enable, Integer volume0to100) {
-    Map masks = enable ? [
+private boolean applyCameraState(boolean active, Integer volume0to100) {
+    Map masks = active ? [
+        "0": null
+    ] : [
         "1": [
             coord : [2, 3, 1000, 3, 1000, 1000, 2, 1000],
             update: true
         ],
         color: [0, 128, 128]
-    ] : [
-        "0": null
     ]
 
     Map payload = [
-        isp: [masks: masks],
-        av : [audio: [volume: volume0to100]]
+        isp     : [masks: masks],
+        av      : [audio: [volume: volume0to100]],
+        soundled: [ledFaceEnabled: active ? 1 : 0]
     ]
     return apiPut("/api/1.1/settings", payload)
 }
