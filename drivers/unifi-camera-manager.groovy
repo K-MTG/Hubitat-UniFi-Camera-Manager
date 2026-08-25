@@ -2,7 +2,7 @@
  * UniFi Camera Manager
  *
  * Filename: unifi-camera-manager.groovy
- * Version:  0.5.0
+ * Version:  0.5.1
  *
  * Description:
  * - Represents a single UniFi Protect camera (talks directly to the
@@ -37,6 +37,11 @@
  *   would leave a working bearer credential sitting around in the clear.
  *   Commands here are infrequent user-triggered toggles, so the cost of a
  *   fresh login per command is negligible.
+ *
+ * Changes (0.5.1):
+ * - Fix privacy mask coordinates: was [2,3,1000,3,1000,1000,2,1000] (left
+ *   small gaps at the corners); now [0,0,1000,0,1000,1000,0,1000], matching
+ *   the corner-to-corner mask confirmed against a real camera
  *
  * Changes (0.5.0):
  * - Flip switch semantics: on() is now camera active/recording (normal),
@@ -175,7 +180,7 @@ private boolean applyCameraState(boolean active, Integer volume0to100) {
         "0": null
     ] : [
         "1": [
-            coord : [2, 3, 1000, 3, 1000, 1000, 2, 1000],
+            coord : [0, 0, 1000, 0, 1000, 1000, 0, 1000],
             update: true
         ],
         color: [0, 128, 128]
